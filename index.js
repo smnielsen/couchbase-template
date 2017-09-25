@@ -10,95 +10,206 @@ const COUCHBASE = 'couchbase://localhost:8091'
 const cluster = new couchbase.Cluster(COUCHBASE);
 const bucket = cluster.openBucket('test');
 
-const randomInt = (min, max) => Math.floor(Math.random() * (max - min + 1)) + min;
-const SPORTS = ['FOOTBALL', 'BASKET', 'HOCKEY'];
-const COUNTRY = ['SE', 'CA', 'IT'];
+app.get('/bets', (req, res) => {
+    const totalStartTime = new Date();
+    const sport = 'BASKET';
+    const country = 'SE';
+    const viewQuery1 = ViewQuery
+        .from('dev_test', 'bet_by_sport_in_country')
+        .reduce(false)
+        .stale(ViewQuery.Update.BEFORE)
+        .key([sport, country]);
 
-// Flush all data if necessary
-// bucket.manager().flush();
+    const viewQuery2 = ViewQuery
+        .from('dev_test', 'bet_by_sport')
+        .reduce(false)
+        .stale(ViewQuery.Update.BEFORE)
+        .key([sport]);
 
-//Insert some mocked data
-// for(let i = 0; i < 10; i++) {
-//     var bet = {
-//         id: i + 100000,
-//         sport: SPORTS[randomInt(0, SPORTS.length - 1)],
-//         country: COUNTRY[randomInt(0, COUNTRY.length - 1)],
-//         count: randomInt(30, 100),
-//         type: 'BET'
-//     };
-//     const docId = `bet-${bet.id}`;
-//     bucket.upsert(docId, bet, (err, result) => {
-//         if (err) {
-//             console.error('Could not upsert bet with id: ' + bet.id, err.message);
-//             return;
-//         }
-//         //console.log('Inserted bet with id ' + docId);
-//     });
-// }
+    const viewQuery3 = ViewQuery
+        .from('dev_test', 'bet_in_country')
+        .reduce(false)
+        .stale(ViewQuery.Update.BEFORE)
+        .key([country]);
 
-app.get('/test', (req, res) => {
+    const mapBet = (callback, startTime, viewKey) => (err, result) => {
+        if (err) {
+            return callback(err);
+        }
+
+        const results = result.reduce((values, result) => {
+            if (!result.value) {
+                return values;
+            }
+            if(!values[result.value.eventId]) {
+                values[result.value.eventId] = {
+                    id: result.value.eventId,
+                    sport: result.value.sport,
+                    country: result.value.country,
+                    count: 0
+                };
+            }
+            values[result.value.eventId].count++;
+            return values;
+        }, {});
+        const events = Object.values(results);
+        const endTime = new Date();
+        callback(null, {
+            time: `${endTime.getTime() - startTime.getTime()}ms`,
+            events
+        });
+    };
+
+    async.parallel({
+        'sportcountry': (done) => {
+            const startTime = new Date();
+            bucket.query(viewQuery1, mapBet(done, startTime, 'sportcountry'));
+        },
+        'sport': (done) => {
+            const startTime = new Date();
+            bucket.query(viewQuery2, mapBet(done, startTime, 'sport'));
+        },
+        'country': (done) => {
+            const startTime = new Date();
+            bucket.query(viewQuery3, mapBet(done, startTime, 'country'));
+        },
+    }, (err, results) => {
+        if (err) {
+            res.json({ assert: 'failed', message: err.message, err: err, data: results });
+            return;
+        }
+        try {
+            const assertion = {};
+            // Assertion
+            if (results.sportcountry.events) {
+                results.sportcountry.events.forEach((event) => {
+                    assert.equal(event.sport, sport, `${event.sport} should equal ${sport}`);
+                    assert.equal(event.country, country, `${event.country} should equal ${country}`);
+                });
+                assertion.sportcountry = 'isOk';
+            }
+            
+            if (results.sport.events) {
+                results.sport.events.forEach((event) => {
+                    assert.equal(event.sport, sport, `${event.sport} should equal ${sport}`);
+                });
+                assertion.sport = 'isOk';
+            }
+    
+            if (results.country.events) {
+                results.country.events.forEach((event) => {
+                    assert.equal(event.country, country, `${event.country} should equal ${country}`);
+                });
+                assertion.country = 'isOk';
+            }
+    
+            const endTime = new Date();
+            res.json({
+                assertion,
+                time: `${endTime.getTime() - totalStartTime.getTime()}ms`,
+                results
+            });
+        } catch (e) {
+            res.json({ assert: 'failed', message: e.message, err: e, data: results });
+        }
+    });   
+});
+
+app.get('/events', (req, res) => {
+    const totalStartTime = new Date();
     const sport = 'FOOTBALL';
     const country = 'SE';
     const viewQuery1 = ViewQuery
         .from('dev_test', 'by_sport_in_country')
         .reduce(false)
+        .stale(ViewQuery.Update.BEFORE)
         .key([sport, country]);
 
     const viewQuery2 = ViewQuery
         .from('dev_test', 'by_sport')
+        .stale(ViewQuery.Update.BEFORE)
         .key([sport])
         .reduce(false);
 
     const viewQuery3 = ViewQuery
         .from('dev_test', 'by_country')
+        .stale(ViewQuery.Update.BEFORE)
         .reduce(false)
         .key([country]);
 
-    const mapValue = (callback, viewKey) => (err, result) => {
+    const mapEvent = (callback, startTime, viewKey) => (err, result) => {
         if (err) {
             return callback(err);
         }
-        // callback(null, result);
 
         const results = result.map((res) => res.id);
         async.parallel(
             results.map((docId) => {
                 return (done) => {
-                    bucket.get(docId, (e, r = {}) => done(e, r.value));
+                    bucket.get(docId, (e, r = {}) => done(e, {
+                        id: r.value.id,
+                        sport: r.value.sport,
+                        country: r.value.country,
+                        count: r.value.count
+                    }));
                 };
            }),
-           (err, results) => {
+           (err, events) => {
+               const endTime = new Date(); 
                callback(err, {
-                   sport: (viewKey.includes('sport') && results[0]) ? results[0].sport : '',
-                   country: (viewKey.includes('country') && results[0]) ? results[0].country : '',
-                   count: results.length,
-                   events: results
-               })
+                   time: `${endTime.getTime() - startTime.getTime()}ms`,
+                   events
+               });
            }
         )
     }
     async.parallel({
-        'sportcountry': (done) => bucket.query(viewQuery1, mapValue(done, 'sportcountry')),
-        'sport': (done) => bucket.query(viewQuery2, mapValue(done, 'sport')),
-        'country': (done) => bucket.query(viewQuery3, mapValue(done, 'country'))
+        'sportcountry': (done) => {
+            const startTime = new Date();
+            bucket.query(viewQuery1, mapEvent(done, startTime, 'sportcountry'));
+        },
+        'sport': (done) => {
+            const startTime = new Date();
+            bucket.query(viewQuery2, mapEvent(done, startTime, 'sport'));
+        },
+        'country': (done) => {
+            const startTime = new Date();
+            bucket.query(viewQuery3, mapEvent(done, startTime, 'country'));
+        },
     }, (err, results) => {
-
+        if (err) {
+            res.json({ assert: 'failed', message: err.message, err: err, data: results });
+            return;
+        }
         try {
             let assertion = {};
             // Assertion
-            results.sportcountry.events.forEach((event) => {
-                assertion[`sportcountry-${event.id}-${event.sport}`] = event.sport === sport;
-                assertion[`sportcountry-${event.id}-${event.country}`] = event.country === country;
-            });
-            results.sport.events.forEach((event) => {
-                assertion[`sport-${event.id}-${event.sport}`] = event.sport === sport;
-            });
-            results.country.events.forEach((event) => {
-                assertion[`country-${event.id}-${event.country}`] = event.country === country;
-            });
+            if (results.sportcountry.events) {
+                results.sportcountry.events.forEach((event) => {
+                    assert.equal(event.sport, sport, `${event.sport} should equal ${sport}`);
+                    assert.equal(event.country, country, `${event.country} should equal ${country}`);
+                });
+                assertion.sportcountry = 'isOk';
+            }
+            
+            if (results.sport.events) {
+                results.sport.events.forEach((event) => {
+                    assert.equal(event.sport, sport, `${event.sport} should equal ${sport}`);
+                });
+                assertion.sport = 'isOk';
+            }
+    
+            if (results.country.events) {
+                results.country.events.forEach((event) => {
+                    assert.equal(event.country, country, `${event.country} should equal ${country}`);
+                });
+                assertion.country = 'isOk';
+            }
 
+            const endTime = new Date();
             res.json({
                 assertion,
+                time: `${endTime.getTime() - totalStartTime.getTime()}ms`,
                 results
             });
         } catch (e) {
