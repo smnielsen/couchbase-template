@@ -1,0 +1,13 @@
+{
+  "name": "couchbase-test",
+  "version": "1.0.0",
+  "description": "test of couchbase",
+  "main": "index.js",
+  "license": "MIT",
+  "dependencies": {
+    "async": "^2.5.0",
+    "body-parser": "^1.18.2",
+    "couchbase": "^2.4.0",
+    "express": "^4.15.5"
+  }
+}
